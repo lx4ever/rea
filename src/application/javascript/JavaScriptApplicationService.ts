@@ -62,20 +62,7 @@ export const analyzeJavaScriptApplicationValidated = async (
     });
     await checkpointJavaScriptAnalysis(options.signal);
     reconstructed = await reconstructJavaScriptArtifact(
-      {
-        input_path: input.input_path,
-        format: input.format,
-        integrity_policy: input.integrity_policy,
-        ...(input.source_paths === undefined
-          ? {}
-          : { source_paths: input.source_paths }),
-        ...(input.max_heap_mb === undefined
-          ? {}
-          : { max_heap_mb: input.max_heap_mb }),
-        ...(input.analysis_timeout_ms === undefined
-          ? {}
-          : { analysis_timeout_ms: input.analysis_timeout_ms }),
-      },
+      input,
       scope,
       options.signal,
       options.progress,

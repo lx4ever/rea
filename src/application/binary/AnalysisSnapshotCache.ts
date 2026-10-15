@@ -8,6 +8,7 @@ import {
 } from "../../domain/evidenceErrors.js";
 import { NoBinaryOpenError } from "../../domain/configurationErrors.js";
 import type { AnalysisError } from "../../domain/analysisErrorBase.js";
+import type { AnalysisInputError } from "../../domain/analysisErrorCore.js";
 import { rebindEvidenceSubjectTargetPath } from "../../domain/evidence.js";
 import { err, ok, type Result } from "../../domain/result.js";
 import {
@@ -82,6 +83,11 @@ export const isSnapshotCacheable = (
   (descriptor.cachePolicy === "snapshot" ||
     descriptor.effects.mayWriteFilesystem === false) &&
   descriptor.effects.changesPermissions === false;
+
+/** Windows Ghidra must admit the selected source through its native snapshot owner. */
+export const requiresNativeSourceAdmissionBeforeReplay = (
+  providerId: string | undefined,
+): boolean => process.platform === "win32" && providerId === "ghidra";
 
 /** Bounded in-memory cache for one immutable binary identity. */
 export class AnalysisSnapshotCache {
@@ -190,7 +196,7 @@ export class AnalysisSnapshotCache {
       | undefined,
     mergeEvidence: (
       bundle: EvidenceBundle,
-    ) => Result<number, EvidenceIntegrityError>,
+    ) => Result<number, EvidenceIntegrityError | AnalysisInputError>,
   ): Result<number, AnalysisError> {
     let validated: AnalysisSnapshot;
     try {
@@ -336,6 +342,9 @@ export class AnalysisSnapshotCache {
   }): void {
     const { target, profile, operation, parameters, execution } = input;
     this.select(target, profile);
+    // The snapshot format does not carry reference truncation; a replay would
+    // present a capped read as complete, so it is not recorded.
+    if (execution.referencesTruncated === true) return;
     const queryId = analysisQueryId(
       snapshotTarget(target),
       snapshotBinding(profile),

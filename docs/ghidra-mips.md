@@ -16,10 +16,33 @@ PE, managed and Mach-O architecture sets are unchanged.
 The Ghidra lane admits ELF32 `ET_EXEC` and `ET_REL`, little or big endian, with
 explicit o32 and `EF_MIPS_ARCH_32R2` flags and no machine-specific or ASE
 encoding flags. These are header declarations, not proof that every instruction
-conforms to that ISA. ELF64, n32/n64, unspecified ABI, MIPS16/microMIPS,
-machine-specific variants, shared objects and PSP PRX are not covered by this
-lane. Their family may be identified, but provider selection returns the
+conforms to that ISA. ELF64, n32/n64, unspecified ABI, microMIPS,
+machine-specific variants and PSP PRX are not covered by this standard-instruction
+lane. MIPS16 shared images have the separate bounded profile below; other shared
+or compressed images remain unsupported. Their family may be identified, but provider selection returns the
 specific unsupported constraint rather than guessing a compatible profile.
+
+A second admission covers recordless legacy firmware images
+([#1620](https://github.com/morluto/rea/issues/1620)): ELF32 `ET_EXEC` headers
+declaring `EF_MIPS_ARCH_32` or `EF_MIPS_ARCH_32R2` with an unspecified ABI
+field, `EF_MIPS_ABI2` clear, and an _inspected_ absence of any ABI flags
+record (a target whose record was merely not observed stays refused). For
+these images o32 is an analysis assumption derived from the ELF32/ET_EXEC
+structure, recorded as `mips_abi_basis` in the profile and stated as a
+limitation in Evidence, never a declared fact; floating-point ABI semantics
+stay unverified. Ghidra's own header auto-selection picks a 64-bit language
+for exactly these files, so the lane pins `-processor MIPS:<LE|BE>:32:default`
+through a `provider-pinned-v1` profile selection and checks the
+bridge-reported `language_id` after import. A caller-selected
+`REA_GHIDRA_LANGUAGE_ID`/`REA_GHIDRA_COMPILER_SPEC_ID` still wins over the
+pin; combining the pinned profile with an environment override is a typed
+refusal. A header that declares an ABI field but carries no record is still
+refused. Two further boundaries apply: an inspection that could not examine
+every ABI declaration source (for example a carved ELF whose section table
+extends past the captured bytes without a program-header record) does not
+establish the recordless admission, and an `EF_MIPS_ARCH_32` header that
+_declares_ an ABI is refused rather than relabeled, because the declared-ABI
+lane is verified for `EF_MIPS_ARCH_32R2` headers only.
 
 Explicit `EF_MIPS_FP64` and `EF_MIPS_NAN2008` declarations are refused. Their
 absence is insufficient: Clang can emit identical `e_flags` for FP32, FP64 and
@@ -29,31 +52,106 @@ section names or the record being inside the initial 4 KiB header probe.
 Program and section declarations must agree; duplicate, conflicting, truncated
 or out-of-file records are rejected. Stripped section tables and section-only
 records are supported. Extended table numbering is explicitly unsupported.
-For carved ELFs whose section table extends beyond the captured file, REA
-examines every complete captured section header and records the unavailable
-headers as a limitation. A valid program-header ABI record can still establish
-the supported declaration. Available section declarations must agree with it;
-their duplicate, conflicting or unreadable records remain errors. A missing
-program-header record does not make ABI declarations in uncaptured sections
-absent or supply a default ABI.
+GNU `SHT_GNU_ATTRIBUTES` sections are located by numeric section type; section
+names never control detection. REA reads at most 4096 payload bytes and parses
+format version `A`, the `gnu` vendor's file-scope `Tag_GNU_MIPS_ABI_FP` (4) and
+`Tag_GNU_MIPS_ABI_MSA` (8) only. Unknown vendors, scopes or tags, repeated
+declarations, malformed lengths, and out-of-file or oversized payloads remain
+refusals. A nonzero FP tag must match the separate ABI flags `fp_abi` record;
+value 0 (`ANY`) declares no requirement. The [GNU Object Attributes v1
+format](https://sourceware.org/binutils/docs/as/Object-Attributes-v1.html) and
+[GNU MIPS tag definitions](https://sourceware.org/binutils/docs/as/GNU-Object-Attributes.html)
+are the format references. The MSA tag describes the vector
+argument ABI, while the ABI flags ASE field describes instruction-set
+extensions; REA does not treat those as interchangeable. The 128-bit MSA
+argument ABI and unknown nonzero MSA values remain unsupported. Without a
+separate ABI flags record, FP attribute values are admitted only when absent,
+`ANY` (0), double precision (1), or FPXX (5), the values covered by the
+recordless profile. Parsed values are retained in the MIPS analysis profile.
+For carved ELFs whose section table extends
+beyond the captured file, REA examines every complete captured section header
+and records the unavailable headers as a limitation. The provider refuses an
+incomplete ABI declaration inspection even when a program-header ABI record is
+valid, because an unavailable section header could carry an unsupported or
+conflicting declaration. A missing program-header record does not make ABI
+declarations in uncaptured sections absent or supply a default ABI.
 The field layout follows
 [`Elf_MIPS_ABIFlags_v0`](https://github.com/bminor/glibc/blob/master/elf/elf.h).
 
-Provider admission requires record version 0, MIPS32r2, 32-bit GPRs, no CPR2,
-no ISA extension, ASE or unknown general flags, and one of two floating-point
-declarations: 32-bit CPR1 with a double-precision or FPXX ABI, or no CPR1 with
-the soft-float ABI. Other combinations, including single-float, FP64 and
-unspecified ABIs, are refused. Missing records remain unknown rather than
-defaulting to a compatible ABI, and this lane refuses them. Unknown record
+Provider admission on the declared-ABI lane above requires record version 0,
+MIPS32r2, 32-bit GPRs, no CPR2, no ISA extension, ASE or unknown general
+flags, and one of two floating-point declarations: 32-bit CPR1 with a
+double-precision or FPXX ABI, or no CPR1 with the soft-float ABI. Other
+combinations, including single-float, FP64 and unspecified ABIs, are refused.
+Missing records remain unknown rather than defaulting to a compatible ABI, and
+the declared-ABI lane refuses them; the recordless legacy admission above is
+the only path that admits a recordless image. Unknown record
 values are retained for diagnosis but do not gain provider support. These checks
 bind the declared interpretation; the fixtures do not establish full
 floating-point behavioral conformance.
+
+### MIPS16 shared images
+
+A separate profile admits ELF32 `ET_DYN`, either byte order, declaring explicit
+o32, MIPS32r2 and exactly the MIPS16 ASE. Machine variants, n32, FP64 and NAN2008
+remain refused. Source inspection must examine the complete dynamic relocation
+declarations through uniquely mapped file-backed `PT_LOAD` ranges. This profile
+verifies `R_MIPS_NONE` and symbol-index-zero `R_MIPS_REL32`; section declarations
+must describe that same dynamic table. Unavailable section headers and additional
+section relocation tables (including `--emit-relocs` output) remain unsupported.
+Symbol-bearing REL32,
+other relocation types, RELA and PLT declarations remain unsupported. A real
+negative control shows that Ghidra can normalize a symbol-bearing MIPS16 function
+pointer to an even address, losing the source mode tag. REA refuses that shape
+rather than rewriting the source or silently repairing the analysis result.
+
+The profile pins the endian-matched `MIPS:<LE|BE>:32:default` processor and default
+compiler specification, and checks the bridge-reported language after import.
+The generic processor preserves mixed MIPS32/MIPS16 code through per-address
+`ISA_MODE` context; a global `16e` processor would impose one mode across the
+image. A caller-selected incompatible processor or compiler specification is
+explicitly refused without replacing the requested choice.
+
+An observed ABI flags record must agree with the header and MIPS16 ASE, and
+must declare the same verified floating-point combinations as the standard
+lane. With no observed record, every ABI declaration table must have been
+completely examined. The header still declares o32, but floating-point ABI
+semantics remain unknown and are stated in Evidence; selecting the default
+compiler specification does not establish floating-point storage. Partial
+section tables do not prove record absence. The existing soft-float prototype
+policy applies when the source explicitly declares soft-float.
+
+Returned addresses are analysis coordinates, not runtime load addresses.
+`inspect_native_load_image` preserves original relocation bytes, current loaded
+memory bytes and provider status. External GOT bindings remain unverified
+without their defining images. The provider's `modified_sha256` describes its
+ephemeral relocated image and can differ from `original_sha256`; it does not
+mean that the caller's artifact was written. `inspect_native_instruction` retains the program
+language variant in `mode` and reports actual per-address `ISA_MODE` separately
+in `decoder_context`, including null when unavailable. Artifact bytes and digests
+remain unchanged; this workflow does not execute the shared library.
+
+The optional real-provider check builds eight source-owned GNU controls, covering
+both byte orders, mixed MIPS32/MIPS16 code, declared and absent ABI records, and
+the rejected symbol-bearing and additional section relocations. It compares source instruction bytes,
+function symbols and the local function-pointer tag with actual CLI/MCP results,
+checks context through a snapshot round trip, and verifies process cleanup.
+It requires caller-supplied GNU MIPS cross-binutils and Ghidra; no fixture target
+is executed or patched after linking. Floating-point behavior of compressed
+functions is not established by these integer controls.
+
+```bash
+REA_MIPS_AS=/absolute/path/to/mips-linux-gnu-as \
+REA_MIPS_LD=/absolute/path/to/mips-linux-gnu-ld \
+GHIDRA_INSTALL_DIR=/absolute/path/to/ghidra \
+npm run verify:ghidra:mips-shared
+```
 
 MIPS header and ABI record facts are committed in the analysis profile so
 interpretation changes invalidate profile-bound snapshots. The support-lane
 identity is versioned independently of file identity. Evidence, lifecycle
 outputs and saved snapshots preserve the `mips` family. Hopper and IDA adapters
-do not implicitly gain MIPS support. Windows Ghidra P0 remains PE x86/x86-64 only.
+do not implicitly gain MIPS support. Windows Ghidra P0 does not admit MIPS targets.
 
 ### Soft-float prototype
 
@@ -186,8 +284,10 @@ from the original file bytes. HI16/LO16 are checked as the effective address
 each LO16 forms with each HI16 it resolves, including several HI16s before one
 LO16, so a missing signed-low carry fails and a HI16 without a following LO16
 fails. The lane also requires matching Ghidra relocation entries and statuses,
-section file offsets and sizes, coverage of a shared HI16, a LO16 carry,
-external code and data and `R_MIPS_32` words, direct calls from the entry
+section file offsets and sizes, coverage of a shared HI16, a LO16 resolving
+several pending HI16s (from an assembly block, since Clang does not emit that
+from C), a LO16 carry, external code and data and `R_MIPS_32` words, direct
+calls from the entry
 function, the relocatable support lane in the snapshot profile, the
 relocatable limitation in Evidence and an unchanged source object. The fixture
 also calls `powf`, an external whose float prototype comes from Ghidra's C

@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 import { parseWabtOutput } from "./WabtOutput.js";
 import { parseWabtWat } from "./WabtWat.js";
 import { associateWasmGlue } from "./WasmGlueAdapter.js";
+import { absoluteCallerPath } from "../filesystem/callerPath.js";
 const golden = () =>
   readFile(
     new URL("../../tests/fixtures/wasm/objdump.txt", import.meta.url),
@@ -138,6 +139,44 @@ it("accepts an unpadded DataCount row and still rejects malformed output and bad
     ),
   ).toThrow(/header/u);
 });
+it("bounds section header bytes while accepting a five-byte size LEB", () => {
+  const paddedCustomDump = [
+    "",
+    "module.wasm:\tfile format wasm 0x1",
+    "",
+    "Sections:",
+    "",
+    '   Custom start=0x0000000e end=0x0000000f (size=0x00000001) ""',
+    "",
+    "Section Details:",
+    "",
+    "Custom:",
+    ' - name: ""',
+    "",
+  ].join("\n");
+  expect(parseWabtOutput(paddedCustomDump, 15, [""]).sections).toMatchObject([
+    { kind: "Custom", start: 14, end: 15, bytes: 1 },
+  ]);
+
+  for (const gap of [0, 1, 7]) {
+    const start = 11 + gap;
+    const malformed = [
+      "",
+      "module.wasm:\tfile format wasm 0x1",
+      "",
+      "Sections:",
+      "",
+      "     Type start=0x0000000a end=0x0000000b (size=0x00000001) count: 0",
+      `   Custom start=0x${start.toString(16).padStart(8, "0")} end=0x${(start + 1).toString(16).padStart(8, "0")} (size=0x00000001) ""`,
+      "",
+      "Section Details:",
+      "",
+    ].join("\n");
+    expect(() => parseWabtOutput(malformed, start + 1, [""])).toThrow(
+      /ranges/u,
+    );
+  }
+});
 it.each([
   { displayed: [], decoded: ["named"] },
   { displayed: ["named"], decoded: [] },
@@ -160,12 +199,38 @@ it.each([
 ])("rejects incomplete decoded module-name metadata: %s", (text) => {
   expect(() => parseWabtWat(text)).toThrow(/metadata/u);
 });
+it("frames custom section names at their NUL-terminated objdump display", async () => {
+  const text = await golden();
+  expect(parseWabtOutput(text, 76, ["test\0hidden"]).sections.at(-1)).toEqual({
+    kind: "Custom",
+    start: 64,
+    end: 76,
+    bytes: 12,
+    description: '"test"',
+  });
+  expect(() => parseWabtOutput(text, 76, ["other\0test"])).toThrow(
+    /custom-section header/u,
+  );
+});
+it("preserves leading U+FEFF as custom-name data, not a debug-name marker", () => {
+  const parsed = parseWabtWat(
+    '(module (@custom "\\ef\\bb\\bfsection" "payload") (@custom "\\ef\\bb\\bfname" "payload") (@custom "\\ef\\bb\\bf" "payload") (@custom "" "payload"))',
+  );
+  expect(parsed.customSectionNames).toEqual([
+    "\uFEFFsection",
+    "\uFEFFname",
+    "\uFEFF",
+    "",
+  ]);
+  expect(parsed.debugModuleNames).toEqual([]);
+  expect(() => parseWabtWat('(module (@custom "\\ff" "payload"))')).toThrow();
+});
 it("extracts escaped WAT import/export forms while retaining multiline producer text", async () => {
   const text = await readFile(
     new URL("../../tests/fixtures/wasm/decoded.wat", import.meta.url),
     "utf8",
   );
-  expect(parseWabtWat(text)).toEqual({
+  expect(parseWabtWat(text)).toMatchObject({
     imports: ['(import "env" "foo" (func (;0;) (type 0)))'],
     exports: ['(export "memory" (memory 0))', '(export "run" (func 1))'],
     customSectionNames: ["test"],
@@ -175,7 +240,7 @@ it("extracts escaped WAT import/export forms while retaining multiline producer 
     parseWabtWat(
       '(module (import "a.b" "c\\0aline" (func)) (export "fake\\22Export[1]:" (func 0)))',
     ),
-  ).toEqual({
+  ).toMatchObject({
     imports: ['(import "a.b" "c\\0aline" (func))'],
     exports: ['(export "fake\\22Export[1]:" (func 0))'],
     customSectionNames: [],
@@ -217,4 +282,23 @@ it("keeps exact local, ambiguous URL, computed and unparseable glue distinct", (
     parse_status: "failed",
     references: [],
   });
+});
+
+it("matches a CLI-selected ./ module exactly against its glue reference", () => {
+  // The CLI makes `./module.wasm` absolute from /app with absoluteCallerPath.
+  const selected = absoluteCallerPath("./module.wasm", {
+    cwd: "/app",
+    platform: "linux",
+  });
+  expect(
+    associateWasmGlue('fetch("./module.wasm");', "/app/glue.js", [
+      selected,
+      "/other/module.wasm",
+    ]).references,
+  ).toMatchObject([
+    {
+      association: "local-path-candidate",
+      candidate_paths: ["/app/module.wasm"],
+    },
+  ]);
 });

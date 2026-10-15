@@ -38,11 +38,11 @@ const outputFor = async (
       arguments_[0] === "-imports" ? "dyld-imports.txt" : "dyld-exports.txt",
     );
   if (tool === "dwarfdump")
-    return "UUID: 01234567-89AB-CDEF-0123-456789ABCDEF (arm64) fixture\n";
+    return `UUID: 01234567-89AB-CDEF-0123-456789ABCDEF (arm64) ${arguments_.at(-1)}\n`;
   if (tool === "file")
     return arguments_.at(-1)?.endsWith(".plist") === true
       ? "XML 1.0 document text\n"
-      : "Mach-O 64-bit executable arm64, little-endian\n";
+      : "Mach-O 64-bit executable arm64\n";
   if (tool === "vtool") return "Load command 3 LC_BUILD_VERSION\n";
   if (tool === "swift-demangle") return nativeFixture("demangle.txt");
   if (tool === "plutil") return nativeFixture("plist.json");

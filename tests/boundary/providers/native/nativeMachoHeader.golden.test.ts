@@ -9,6 +9,96 @@ import {
   withOtoolMachHeader,
 } from "../../../fixtures/nativeCommands.js";
 
+it("retains the delayed dependency in the complete real framed otool output", async () => {
+  const output = await nativeFixture("otool-dylib-use.txt");
+  const runner = new NativeFixtureRunner({ "otool:-h": output });
+  const client = new NativeMacOSProvider({}, runner, "darwin").createClient(
+    nativeMachoTarget("/owned/fixture"),
+  );
+  const result = await client.execute("inspect_macho", {});
+  if (!result.ok) throw result.error;
+  expect(result.value.result).toMatchObject({
+    load_commands: {
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          index: 16,
+          kind: "LC_LOAD_DYLIB",
+          fields: expect.objectContaining({ options: "delay-init" }),
+        }),
+      ]),
+    },
+    dependencies: {
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          path: "@rpath/libdelay.dylib",
+          current_version: "0.0.0",
+          compatibility_version: "1.0.0",
+        }),
+      ]),
+    },
+  });
+  expect(parseOtoolLoadCommands(output).commands).toHaveLength(23);
+});
+
+it.each([
+  ["0xfeedfacf 16777228", 64, "little"],
+  ["0xfeedfacf 16777223", 64, "little"],
+  ["0xfeedface        7", 32, "little"],
+  ["0xfeedface       18", 32, "big"],
+  ["0xfeedface        6", 32, null],
+  ["0xfeedfade 16777228", null, "little"],
+] as const)(
+  "derives word size and byte order from the selected slice header %s",
+  async (header, wordSize, endian) => {
+    const output = (await nativeFixture("otool-dylib-use.txt")).replace(
+      "0xfeedfacf 16777228",
+      header,
+    );
+    expect(parseOtoolLoadCommands(output)).toMatchObject({ wordSize, endian });
+  },
+);
+
+it("rejects a repeated options field even when the duplicate has no value", async () => {
+  const output = (await nativeFixture("otool-dylib-use.txt")).replace(
+    "      options delay-init",
+    "      options delay-init\n      options",
+  );
+  expect(() => parseOtoolLoadCommands(output)).toThrow(/otool/u);
+});
+
+it.each([
+  "vmaddr",
+  "vmsize",
+  "uuid",
+  "entryoff",
+  "addr",
+  "current version",
+  "time stamp",
+])(
+  "rejects a required %s label with no value and retains its producer output",
+  async (field) => {
+    const original = await nativeFixture("otool-load.txt");
+    const output = original.replace(
+      new RegExp(`^([ \\t]*${field})[ \\t]+\\S[^\\n]*$`, "mu"),
+      "$1",
+    );
+    if (output === original) throw new Error(`Fixture has no ${field} value`);
+    const runner = new NativeFixtureRunner({ "otool:-h": output });
+    const client = new NativeMacOSProvider({}, runner, "darwin").createClient(
+      nativeMachoTarget("/owned/fixture"),
+    );
+    const result = await client.execute("inspect_macho", {});
+    if (result.ok) throw new Error(`Expected missing ${field} value rejection`);
+    expect(result.error).toMatchObject({
+      _tag: "AnalysisOutputError",
+      capturedOutput: { stdout: output, stderr: "", truncated: false },
+    });
+    expect(result.error.cause).toMatchObject({
+      message: expect.stringContaining(field),
+    });
+  },
+);
+
 it("collects the actual Mach header alongside the native load commands", async () => {
   // The provider always invokes `otool -h -l`, which the runner resolves
   // via the "otool:-h" key; no bare `otool` override is needed.

@@ -48,7 +48,16 @@ class ControlledSession {
     return 0;
   }
   events() {
-    return { retained: 0, dropped: 0, items: [] };
+    return {
+      retained: 0,
+      dropped: 0,
+      items: [],
+      omissions: {
+        by_kind: [],
+        network_transactions: [],
+        network_transaction_range: null,
+      },
+    };
   }
   async perform(action, signal) {
     assert.equal(action.action, "wait_for_timeout");
@@ -103,9 +112,12 @@ export const createBrowserScenarioProvider = () =>
 const composition = pathToFileURL(
   root + "/dist/composition/browserScenario.js",
 ).href;
+const bundledComposition = pathToFileURL(
+  root + "/dist/cli-runtime/composition__browserScenario-",
+).href;
 registerHooks({
   load(url, context, nextLoad) {
-    if (url === composition)
+    if (url === composition || url.startsWith(bundledComposition))
       return {
         format: "module",
         shortCircuit: true,

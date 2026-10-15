@@ -139,7 +139,14 @@ export const reconstructJavaScriptArtifact = async (
         "parse_javascript_sources",
         `Parsing and projecting ${String(files.files.length - (files.source_selection?.unselected_files ?? 0))} selected application source files`,
       );
-      const semanticProjection = createJavaScriptSemanticGraphProjection();
+      const semanticProjection = createJavaScriptSemanticGraphProjection({
+        ...(input.max_semantic_nodes === undefined
+          ? {}
+          : { totalNodes: input.max_semantic_nodes }),
+        ...(input.max_semantic_nodes_per_file === undefined
+          ? {}
+          : { fileNodes: input.max_semantic_nodes_per_file }),
+      });
       const worker = createJavaScriptSourceAnalysis(
         {
           heapMb:
@@ -245,9 +252,17 @@ export const reconstructJavaScriptArtifact = async (
           : { source_selection: files.source_selection }),
         graph,
         semantic_graph: semanticGraph,
-        electron_summary: summarizeElectronBoundaries(analysis),
+        electron_summary: summarizeElectronBoundaries(
+          analysis,
+          new Set(
+            snapshot.occurrences
+              .filter(({ entry_kind }) => entry_kind === "directory")
+              .map(({ logical_path }) => logical_path),
+          ),
+        ),
         statistics: {
-          relevant_files: files.files.length,
+          relevant_files:
+            files.files.length + files.unavailable_relevant_files.length,
           nested_asar_containers: files.containers.length,
           text_bytes_read: files.text_bytes_read,
           invalid_utf8_files: files.invalid_utf8_files,
@@ -270,15 +285,9 @@ export const reconstructJavaScriptArtifact = async (
             limitations: completed.graph.limitations,
           }),
         );
-        const { max_heap_mb, analysis_timeout_ms, ...coreInput } = input;
-        const parameters = {
-          ...coreInput,
-          ...(max_heap_mb === undefined ? {} : { max_heap_mb }),
-          ...(analysis_timeout_ms === undefined ? {} : { analysis_timeout_ms }),
-        };
         const evidence =
           await createOwnedJavaScriptApplicationEvidenceCooperatively(
-            parameters,
+            input,
             partial,
           );
         throw interruption.retainPartialObservation(evidence);

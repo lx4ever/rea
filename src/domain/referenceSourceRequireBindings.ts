@@ -1,5 +1,11 @@
 import * as t from "@babel/types";
 
+import {
+  semanticStaticPropertyKey,
+  semanticWriteSiteTarget,
+  semanticWriteTargets,
+  unwrapJavaScriptExpression,
+} from "./javascript/javascriptAstValues.js";
 import { analyzeParsedJavaScriptReferences } from "./javascript/javascriptSemanticAnalysis.js";
 import {
   semanticBindingId,
@@ -7,7 +13,10 @@ import {
 } from "./javascript/javascriptSemanticState.js";
 import { traverseJavaScriptAst } from "./javascript/javascriptSemanticTraversal.js";
 import type { JavaScriptSemanticReference } from "./javascript/javascriptSemanticIr.js";
-import type { ParsedJavaScriptSource } from "./javascript/javascriptSourceParser.js";
+import {
+  isExplicitModuleSourcePath,
+  type ParsedJavaScriptSource,
+} from "./javascript/javascriptSourceParser.js";
 
 /**
  * Keep calls that resolve either to Node's CommonJS wrapper loader or to a
@@ -29,7 +38,10 @@ export const unshadowedReferenceSourceRequireCalls = (
     semanticScopeId("program", file.program),
     "require",
   );
-  const allowsUnboundRequire = !isExplicitModuleSource(path);
+  // Syntax alone cannot establish Node's runtime mode: `.js` depends on its
+  // package scope, and `.ts` may be compiled with a CommonJS module target.
+  // Keep unmarked paths runtime-unknown and preserve candidate require edges.
+  const allowsUnboundRequire = !isExplicitModuleSourcePath(path);
   const hasTopLevelVarRequire =
     allowsUnboundRequire && hasUninitializedTopLevelVarRequire(file.program);
   const createRequireBinding = directCreateRequireBinding(
@@ -42,6 +54,22 @@ export const unshadowedReferenceSourceRequireCalls = (
       reference.role === "write" &&
       (reference.resolution === "unbound" ||
         reference.bindingId === programRequireBinding),
+  );
+  const isLoaderReference = (identifier: t.Identifier): boolean => {
+    const start = identifier.loc?.start;
+    const reference =
+      start === undefined
+        ? undefined
+        : references.get(`${start.line}:${start.column}`);
+    return (
+      (allowsUnboundRequire && reference?.resolution === "unbound") ||
+      (reference?.resolution === "resolved" &&
+        reference.bindingId === programRequireBinding)
+    );
+  };
+  const loaderMembersIntact = requireLoaderMembersIntact(
+    file.program,
+    isLoaderReference,
   );
   const calls = new Set<t.CallExpression>();
 
@@ -58,6 +86,9 @@ export const unshadowedReferenceSourceRequireCalls = (
         )
       )
         return;
+      // `require.resolve` and `require.main` denote Node's members only
+      // while no visible write or escape can have replaced them.
+      if (!t.isIdentifier(node.callee) && !loaderMembersIntact) return;
       const reference = references.get(`${start.line}:${start.column}`);
       if (
         (allowsUnboundRequire &&
@@ -74,6 +105,68 @@ export const unshadowedReferenceSourceRequireCalls = (
   return calls;
 };
 
+/**
+ * Whether the loader's `resolve` and `main` members keep Node's identity. A
+ * write to either member or to a computed member, or `require` used as a
+ * value other than a call or member read (where a mutator or alias can
+ * replace members), leaves that identity unknown.
+ */
+const requireLoaderMembersIntact = (
+  program: t.Program,
+  isLoaderReference: (identifier: t.Identifier) => boolean,
+): boolean => {
+  let intact = true;
+  const isLoaderMemberTarget = (target: t.Node): boolean => {
+    if (!t.isMemberExpression(target) && !t.isOptionalMemberExpression(target))
+      return false;
+    const object = unwrapJavaScriptExpression(target.object).node;
+    if (!t.isIdentifier(object, { name: "require" })) return false;
+    if (!isLoaderReference(object)) return false;
+    const key = semanticStaticPropertyKey(target.property, target.computed);
+    return key === null || key === "resolve" || key === "main";
+  };
+  traverseJavaScriptAst(program, {
+    enter: (node, parent, readAncestors) => {
+      if (!intact) return;
+      const site = semanticWriteSiteTarget(node);
+      if (site !== null) {
+        for (const target of semanticWriteTargets(site))
+          if (isLoaderMemberTarget(target)) intact = false;
+        return;
+      }
+      if (
+        !t.isIdentifier(node, { name: "require" }) ||
+        parent === null ||
+        !isLoaderReference(node)
+      )
+        return;
+      // Inert parentheses and TypeScript wrappers do not change how the
+      // loader value is used.
+      let used: t.Node = node;
+      let user: t.Node | undefined = parent;
+      const read = readAncestors();
+      const ancestors = read.at(-1) === parent ? read : [...read, parent];
+      for (let index = ancestors.length - 1; index >= 0; index -= 1) {
+        user = ancestors[index];
+        if (
+          user === undefined ||
+          unwrapJavaScriptExpression(user).node !== node
+        )
+          break;
+        used = user;
+      }
+      const usedAsLoader =
+        ((t.isCallExpression(user) || t.isOptionalCallExpression(user)) &&
+          user.callee === used) ||
+        ((t.isMemberExpression(user) || t.isOptionalMemberExpression(user)) &&
+          user.object === used) ||
+        t.isUnaryExpression(user, { operator: "typeof" });
+      if (!usedAsLoader) intact = false;
+    },
+  });
+  return intact;
+};
+
 const contains = (container: t.Node, node: t.Node): boolean =>
   typeof container.start === "number" &&
   typeof container.end === "number" &&
@@ -81,16 +174,6 @@ const contains = (container: t.Node, node: t.Node): boolean =>
   typeof node.end === "number" &&
   container.start <= node.start &&
   node.end <= container.end;
-
-const isExplicitModuleSource = (path: string): boolean => {
-  const lower = path.toLowerCase();
-  if (lower.endsWith(".mjs") || lower.endsWith(".mts")) return true;
-  if (lower.endsWith(".cjs") || lower.endsWith(".cts")) return false;
-  // Syntax alone cannot establish Node's runtime mode: `.js` depends on its
-  // package scope, and `.ts` may be compiled with a CommonJS module target.
-  // Keep unmarked paths runtime-unknown and preserve candidate require edges.
-  return false;
-};
 
 const hasUninitializedTopLevelVarRequire = (program: t.Program): boolean => {
   let found = false;

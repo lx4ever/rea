@@ -104,7 +104,16 @@ const fixturePort = (): AnalysisOperationPort => ({
               "0x11": "_OBJC_CLASS_$_Fixture",
               "0x12": "_OBJC_PROTOCOL_$_FixtureDelegate",
               "0x13": "entry",
-            }),
+            }).map((entry) => ({
+              ...entry,
+              symbol: {
+                primary: true,
+                dynamic: false,
+                external: false,
+                type: "label",
+                source: "analysis",
+              },
+            })),
           ),
         );
       case "decode_interface_builder":
@@ -288,37 +297,43 @@ describe("enhanced MCP tools", () => {
       failed: 0,
     });
     expect(results[3]).toEqual({
-      "0": [
-        {
-          address: "0x1",
-          status: "ok",
-          calls: ["0x2", "0x3"],
-          relationship_coverage: {
-            status: "unknown",
-            reason: "Provider did not report relationship coverage.",
+      graph: {
+        "0": [
+          {
+            address: "0x1",
+            status: "ok",
+            calls: ["0x2", "0x3"],
+            limitations: ["Provider did not report relationship coverage."],
+            relationship_coverage: {
+              status: "unknown",
+              reason: "Provider did not report relationship coverage.",
+            },
           },
-        },
-      ],
-      "1": [
-        {
-          address: "0x2",
-          status: "ok",
-          calls: ["0x1"],
-          relationship_coverage: {
-            status: "unknown",
-            reason: "Provider did not report relationship coverage.",
+        ],
+        "1": [
+          {
+            address: "0x2",
+            status: "ok",
+            calls: ["0x1"],
+            limitations: ["Provider did not report relationship coverage."],
+            relationship_coverage: {
+              status: "unknown",
+              reason: "Provider did not report relationship coverage.",
+            },
           },
-        },
-        {
-          address: "0x3",
-          status: "ok",
-          calls: [],
-          relationship_coverage: {
-            status: "unknown",
-            reason: "Provider did not report relationship coverage.",
+          {
+            address: "0x3",
+            status: "ok",
+            calls: [],
+            limitations: ["Provider did not report relationship coverage."],
+            relationship_coverage: {
+              status: "unknown",
+              reason: "Provider did not report relationship coverage.",
+            },
           },
-        },
-      ],
+        ],
+      },
+      limitations: [],
     });
     expect(results[4]).toMatchObject({
       total: 1,
